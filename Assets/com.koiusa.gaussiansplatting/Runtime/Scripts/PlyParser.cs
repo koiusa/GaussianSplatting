@@ -80,15 +80,17 @@ namespace GaussianSplatting
             float len = Mathf.Sqrt(qw * qw + qx * qx + qy * qy + qz * qz);
             if (len > 1e-6f) { qw /= len; qx /= len; qy /= len; qz /= len; }
 
-            // 3DGS ワールド座標 (COLMAP: 右手系) → Unity (左手系) 変換
-            // 右手系→左手系は奇数軸の反転が必要。Y+Z 反転 = X 軸鏡映と等価
-            // 位置: (x, -y, -z)
-            // クォータニオン: Y+Z 反転 → (w, +qx, -qy, -qz)
+            // 3DGS / COLMAP 座標 (右手系、Y 下向き) → Unity 座標
+            // (左手系、Y 上向き) への基底変換。Y の1軸だけを反転する。
+            // 2軸を反転すると handedness は変わらず、180度回転になってしまう。
+            // 位置: (x, -y, z)
+            // 回転行列 R' = S R S, S = diag(1, -1, 1)
+            // クォータニオン: (w, -x, y, -z)
             return new GaussianSplatGPU
             {
-                position = new Vector3(Get("x"), -Get("y"), -Get("z")),
+                position = new Vector3(Get("x"), -Get("y"), Get("z")),
                 opacity  = opacity,
-                rotation = new Vector4(qw, qx, -qy, -qz),
+                rotation = new Vector4(qw, -qx, qy, -qz),
                 scale    = new Vector3(sx, sy, sz),
                 color    = new Vector3(r, g, b),
             };
