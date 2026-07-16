@@ -16,13 +16,13 @@ Install the package from npm by adding the npm registry to your project's
 {
   "scopedRegistries": [
     {
-      "name": "npmjs",
+      "name": "koiusa",
       "url": "https://registry.npmjs.org",
       "scopes": ["com.koiusa"]
     }
   ],
   "dependencies": {
-    "com.koiusa.gaussiansplatting": "0.1.0"
+    "com.koiusa.gaussiansplatting": "0.1.3"
   }
 }
 ```
