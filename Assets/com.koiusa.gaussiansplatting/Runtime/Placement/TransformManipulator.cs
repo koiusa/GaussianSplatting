@@ -3,7 +3,7 @@ using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.EnhancedTouch;
 using Touch = UnityEngine.InputSystem.EnhancedTouch.Touch;
 
-namespace GaussianSplatting
+namespace Koiusa.Placement
 {
     /// <summary>任意のTransformに対する配置調整とマウス／タッチ入力の共通実装。</summary>
     public class TransformManipulator : MonoBehaviour, IPlacementManipulator

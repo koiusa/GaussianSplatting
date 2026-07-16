@@ -1,6 +1,6 @@
 using UnityEngine;
 
-namespace GaussianSplatting
+namespace Koiusa.Placement
 {
     /// <summary>移動・回転・拡縮を行う配置調整対象の共通API。</summary>
     public interface IPlacementManipulator

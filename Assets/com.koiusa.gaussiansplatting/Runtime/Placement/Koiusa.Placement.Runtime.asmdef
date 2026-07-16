@@ -1,9 +1,8 @@
 {
-  "name": "GaussianSplatting.Runtime",
-  "rootNamespace": "GaussianSplatting",
+  "name": "Koiusa.Placement.Runtime",
+  "rootNamespace": "Koiusa.Placement",
   "references": [
-    "Unity.InputSystem",
-    "Koiusa.Placement.Runtime"
+    "Unity.InputSystem"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],
