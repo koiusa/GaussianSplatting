@@ -1,0 +1,162 @@
+// Stable 32-bit GPU radix sort for Gaussian splat depth keys.
+// Four bits are processed per pass; C# spreads the eight passes across frames.
+
+#pragma kernel InitializeKeys
+#pragma kernel CountDigits
+#pragma kernel PrefixDigits
+#pragma kernel ScatterDigits
+
+struct SplatData
+{
+    float3 pos; float opacity;
+    float4 rot;
+    float3 scale; float pad;
+    float3 color; float pad2;
+};
+
+StructuredBuffer<SplatData> _SplatBuffer;
+StructuredBuffer<uint> _SourceIndices;
+StructuredBuffer<uint> _InputKeys;
+StructuredBuffer<uint> _InputPayloads;
+RWStructuredBuffer<uint> _OutputKeys;
+RWStructuredBuffer<uint> _OutputPayloads;
+RWStructuredBuffer<uint> _GroupCounts;
+RWStructuredBuffer<uint> _GroupOffsets;
+
+float4 _CameraLocalPos;
+float4 _CameraLocalForward;
+uint _SplatCount;
+uint _UseSourceIndices;
+uint _Shift;
+uint _GroupCount;
+uint _GroupsX;
+
+#define GROUP_SIZE 128
+#define RADIX 16
+
+groupshared uint gsHistogram[RADIX];
+groupshared uint gsOrder[GROUP_SIZE];
+groupshared uint gsKeys[GROUP_SIZE];
+groupshared uint gsPayloads[GROUP_SIZE];
+groupshared uint gsDigitStarts[RADIX];
+
+uint FlatGroupIndex(uint3 groupId) { return groupId.y * _GroupsX + groupId.x; }
+uint FloatToAscendingKey(float value)
+{
+    uint bits = asuint(value);
+    return (bits & 0x80000000u) != 0u ? ~bits : (bits ^ 0x80000000u);
+}
+
+[numthreads(GROUP_SIZE, 1, 1)]
+void InitializeKeys(uint3 groupId : SV_GroupID, uint3 tid : SV_GroupThreadID)
+{
+    uint i = FlatGroupIndex(groupId) * GROUP_SIZE + tid.x;
+    if (i >= _SplatCount) return;
+    uint splatId = _UseSourceIndices != 0u ? _SourceIndices[i] : i;
+    float3 delta = _SplatBuffer[splatId].pos - _CameraLocalPos.xyz;
+    float depth = dot(delta, normalize(_CameraLocalForward.xyz));
+    // Radix sorts ascending; invert the ordered float key for back-to-front output.
+    _OutputKeys[i] = ~FloatToAscendingKey(depth);
+    _OutputPayloads[i] = splatId;
+}
+
+[numthreads(GROUP_SIZE, 1, 1)]
+void CountDigits(uint3 groupId : SV_GroupID, uint3 tid : SV_GroupThreadID)
+{
+    uint group = FlatGroupIndex(groupId);
+    if (group >= _GroupCount) return;
+    if (tid.x < RADIX) gsHistogram[tid.x] = 0u;
+    GroupMemoryBarrierWithGroupSync();
+
+    uint i = group * GROUP_SIZE + tid.x;
+    if (i < _SplatCount)
+    {
+        uint digit = (_InputKeys[i] >> _Shift) & 15u;
+        uint ignored;
+        InterlockedAdd(gsHistogram[digit], 1u, ignored);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (tid.x < RADIX)
+        _GroupCounts[tid.x * _GroupCount + group] = gsHistogram[tid.x];
+}
+
+// One thread computes global stable offsets. Work is 16 * groupCount integer adds,
+// independent of splat data and small compared with scatter traffic.
+[numthreads(1, 1, 1)]
+void PrefixDigits(uint3 id : SV_DispatchThreadID)
+{
+    uint offset = 0u;
+    for (uint digit = 0u; digit < RADIX; ++digit)
+    {
+        for (uint group = 0u; group < _GroupCount; ++group)
+        {
+            uint at = digit * _GroupCount + group;
+            _GroupOffsets[at] = offset;
+            offset += _GroupCounts[at];
+        }
+    }
+}
+
+[numthreads(GROUP_SIZE, 1, 1)]
+void ScatterDigits(uint3 groupId : SV_GroupID, uint3 tid : SV_GroupThreadID)
+{
+    uint group = FlatGroupIndex(groupId);
+    if (group >= _GroupCount) return;
+    uint i = group * GROUP_SIZE + tid.x;
+    bool valid = i < _SplatCount;
+    uint key = valid ? _InputKeys[i] : 0xffffffffu;
+    uint payload = valid ? _InputPayloads[i] : 0u;
+    uint digit = (key >> _Shift) & 15u;
+
+    gsKeys[tid.x] = key;
+    gsPayloads[tid.x] = payload;
+    // Sorting by (digit, original lane) makes the local distribution stable.
+    gsOrder[tid.x] = valid ? (digit * GROUP_SIZE + tid.x) : 0xffffffffu;
+    GroupMemoryBarrierWithGroupSync();
+
+    // Local bitonic sort stays entirely in LDS; global memory is touched once.
+    for (uint stage = 2u; stage <= GROUP_SIZE; stage <<= 1u)
+    {
+        for (uint step = stage >> 1u; step > 0u; step >>= 1u)
+        {
+            uint other = tid.x ^ step;
+            if (other > tid.x)
+            {
+                bool ascending = (tid.x & stage) == 0u;
+                uint a = gsOrder[tid.x];
+                uint b = gsOrder[other];
+                if ((ascending && a > b) || (!ascending && a < b))
+                {
+                    gsOrder[tid.x] = b;
+                    gsOrder[other] = a;
+                }
+            }
+            GroupMemoryBarrierWithGroupSync();
+        }
+    }
+
+    if (tid.x < RADIX) gsDigitStarts[tid.x] = GROUP_SIZE;
+    GroupMemoryBarrierWithGroupSync();
+    uint ordered = gsOrder[tid.x];
+    if (ordered != 0xffffffffu)
+    {
+        uint orderedDigit = ordered / GROUP_SIZE;
+        // Do not put the tid.x - 1 access in a short-circuit expression. Some Metal
+        // cross-compilation paths can evaluate both operands, making lane zero read
+        // groupshared memory out of bounds and corrupt the digit start offsets.
+        bool isFirstForDigit = tid.x == 0u;
+        if (tid.x > 0u)
+            isFirstForDigit = gsOrder[tid.x - 1u] / GROUP_SIZE != orderedDigit;
+        if (isFirstForDigit)
+            gsDigitStarts[orderedDigit] = tid.x;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    if (ordered == 0xffffffffu) return;
+    uint originalLane = ordered & (GROUP_SIZE - 1u);
+    uint orderedDigit = ordered / GROUP_SIZE;
+    uint localRank = tid.x - gsDigitStarts[orderedDigit];
+    uint destination = _GroupOffsets[orderedDigit * _GroupCount + group] + localRank;
+    _OutputKeys[destination] = gsKeys[originalLane];
+    _OutputPayloads[destination] = gsPayloads[originalLane];
+}
