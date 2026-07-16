@@ -105,14 +105,13 @@ jobs:
 
       - name: Set up Node.js
         if: steps.check_tag.outputs.exists == 'false'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: '22'
+          node-version: '24'
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
 
       - name: Publish to npm
         if: steps.check_tag.outputs.exists == 'false'
         working-directory: ${{ env.PACKAGE_PATH }}
         run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
