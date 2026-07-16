@@ -1,0 +1,117 @@
+name: Create UPM Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - Assets/com.koiusa.gaussiansplatting/**
+      - .github/workflows/release.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PACKAGE_PATH: Assets/com.koiusa.gaussiansplatting
+  PACKAGE_NAME: GaussianSplatting
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version from package.json
+        id: package_version
+        shell: bash
+        run: |
+          package_version="$(jq -r '.version' "$PACKAGE_PATH/package.json")"
+          if [[ -z "$package_version" || "$package_version" == "null" ]]; then
+            echo "package.json does not contain a valid version" >&2
+            exit 1
+          fi
+          echo "PACKAGE_VERSION=$package_version" >> "$GITHUB_ENV"
+
+      - name: Check if tag exists
+        id: check_tag
+        shell: bash
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/v${PACKAGE_VERSION}" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create and push Git tag
+        if: steps.check_tag.outputs.exists == 'false'
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git tag "v${PACKAGE_VERSION}"
+          git push origin "v${PACKAGE_VERSION}"
+
+      - name: Prepare UPM package
+        if: steps.check_tag.outputs.exists == 'false'
+        shell: bash
+        run: |
+          mkdir -p upm
+          cp -a "$PACKAGE_PATH"/. upm/
+
+      - name: Zip UPM package
+        if: steps.check_tag.outputs.exists == 'false'
+        shell: bash
+        run: |
+          cd upm
+          zip -r "../${PACKAGE_NAME}-upm.zip" .
+
+      - name: Import GPG key
+        if: steps.check_tag.outputs.exists == 'false'
+        shell: bash
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+
+      - name: Sign UPM package
+        if: steps.check_tag.outputs.exists == 'false'
+        shell: bash
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          echo "$GPG_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 --pinentry-mode loopback \
+            --detach-sign -o "${PACKAGE_NAME}-upm.zip.sig" "${PACKAGE_NAME}-upm.zip"
+
+      - name: Create GitHub Release
+        if: steps.check_tag.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.PACKAGE_VERSION }}
+          name: v${{ env.PACKAGE_VERSION }}
+          generate_release_notes: true
+          files: |
+            ${{ env.PACKAGE_NAME }}-upm.zip
+            ${{ env.PACKAGE_NAME }}-upm.zip.sig
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Set up Node.js
+        if: steps.check_tag.outputs.exists == 'false'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
+
+      - name: Publish to npm
+        if: steps.check_tag.outputs.exists == 'false'
+        working-directory: ${{ env.PACKAGE_PATH }}
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
