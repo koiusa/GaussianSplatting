@@ -1,0 +1,56 @@
+// Gaussian Splatting — GPU frustum culling.
+// 各 splat の 3σ バウンディングスフィアをワールド空間の視錐台と比較し、
+// 可視な splat の元インデックスだけを AppendStructuredBuffer に詰める（stream compaction）。
+// 結果はソート／描画で splat 数そのものを減らすために使う。
+
+#pragma kernel CullSplats
+
+struct SplatData
+{
+    float3 pos;
+    float  opacity;
+    float4 rot;
+    float3 scale;
+    float  pad;
+    float3 color;
+    float  pad2;
+};
+
+StructuredBuffer<SplatData>  _SplatBuffer;
+AppendStructuredBuffer<uint> _VisibleIndices;
+
+float4x4 _LocalToWorld;
+float4   _FrustumPlanes[6]; // world space: xyz = normal, w = distance. dot(normal, p) + distance >= 0 が内側
+float    _WorldScale;       // ローカル半径をおおよそワールド半径へ変換するスケール係数（保守的な上限値）
+float    _CullMargin;       // Off-Axis の眼位置移動と非同期更新遅延を吸収するワールド空間マージン
+uint     _SplatCount;
+uint     _GroupsX;
+
+#define GROUP_SIZE 64
+
+// SV_DispatchThreadID は 1 次元ディスパッチでのみ真のフラットインデックスと一致するため、
+// splat 数が大きく 2 次元グリッドで発行する場合に備えてグループ ID から再構成する。
+uint FlatThreadIndex(uint3 groupId, uint3 groupThreadId)
+{
+    return (groupId.y * _GroupsX + groupId.x) * GROUP_SIZE + groupThreadId.x;
+}
+
+[numthreads(GROUP_SIZE, 1, 1)]
+void CullSplats(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    uint i = FlatThreadIndex(groupId, groupThreadId);
+    if (i >= _SplatCount) return;
+
+    SplatData s = _SplatBuffer[i];
+    float3 posWorld = mul(_LocalToWorld, float4(s.pos, 1.0)).xyz;
+    float  radius   = max(s.scale.x, max(s.scale.y, s.scale.z)) * 3.0 * _WorldScale;
+
+    [unroll]
+    for (int p = 0; p < 6; p++)
+    {
+        if (dot(_FrustumPlanes[p].xyz, posWorld) + _FrustumPlanes[p].w + radius + _CullMargin < 0.0)
+            return; // いずれかの平面の外側 → カリング
+    }
+
+    _VisibleIndices.Append(i);
+}

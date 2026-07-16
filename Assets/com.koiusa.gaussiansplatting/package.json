@@ -1,0 +1,46 @@
+{
+  "name": "com.koiusa.gaussiansplatting",
+  "version": "0.1.0",
+  "displayName": "Gaussian Splatting",
+  "description": "Runtime Gaussian Splatting renderer, PLY parser, sorting, culling and manipulation components.",
+  "unity": "6000.3",
+  "unityRelease": "9f1",
+  "author": {
+    "name": "koiusa"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/koiusa/GaussianSplatting"
+  },
+  "license": "MIT",
+  "files": [
+    "Runtime",
+    "Runtime.meta",
+    "Samples~",
+    "README.md",
+    "README.md.meta"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "com.unity.inputsystem": "1.11.2"
+  },
+  "keywords": [
+    "gaussian-splatting",
+    "rendering",
+    "point-cloud"
+  ],
+  "samples": [
+    {
+      "displayName": "Minimal Sample",
+      "description": "A self-contained scene that renders a small procedurally generated splat grid.",
+      "path": "Samples~/Minimal Sample"
+    },
+    {
+      "displayName": "PLY File Selector",
+      "description": "Select and load a binary Gaussian Splat PLY file at runtime.",
+      "path": "Samples~/PLY File Selector"
+    }
+  ]
+}
