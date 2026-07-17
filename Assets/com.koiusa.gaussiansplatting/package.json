@@ -1,6 +1,6 @@
 {
   "name": "com.koiusa.gaussiansplatting",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "displayName": "Gaussian Splatting",
   "description": "Runtime Gaussian Splatting renderer, PLY parser, sorting, culling and manipulation components.",
   "unity": "6000.3",
@@ -19,6 +19,8 @@
     "Samples~",
     "LICENSE",
     "LICENSE.meta",
+    "package.json",
+    "package.json.meta",
     "README.md",
     "README.md.meta"
   ],
