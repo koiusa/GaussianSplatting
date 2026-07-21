@@ -1,6 +1,6 @@
 {
   "name": "com.koiusa.gaussiansplatting",
-  "version": "0.1.7",
+  "version": "0.2.0",
   "displayName": "Gaussian Splatting",
   "description": "Runtime Gaussian Splatting renderer, PLY parser, sorting, culling and manipulation components.",
   "unity": "6000.3",
@@ -28,7 +28,8 @@
     "access": "public"
   },
   "dependencies": {
-    "com.unity.inputsystem": "1.11.2"
+    "com.unity.inputsystem": "1.11.2",
+    "com.unity.render-pipelines.universal": "17.3.0"
   },
   "keywords": [
     "gaussian-splatting",

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -15,6 +16,8 @@ namespace GaussianSplatting
         private GaussianSplatRenderer _splat;
         private RenderTexture _map;
         private Material _depthMaterial;
+        private readonly Dictionary<SkinnedMeshRenderer, Mesh> _bakedMeshes =
+            new Dictionary<SkinnedMeshRenderer, Mesh>();
 
         private void Awake() => _splat = GetComponent<GaussianSplatRenderer>();
 
@@ -69,16 +72,30 @@ namespace GaussianSplatting
             {
                 if (renderer == null || !renderer.enabled) continue;
                 var materials = renderer.sharedMaterials;
+                var skinnedRenderer = renderer as SkinnedMeshRenderer;
+                var bakedMesh = skinnedRenderer != null ? GetBakedMesh(skinnedRenderer) : null;
                 for (int subMesh = 0; subMesh < materials.Length; subMesh++)
                 {
                     var source = materials[subMesh];
-                    Texture texture = source != null && source.mainTexture != null
-                        ? source.mainTexture : Texture2D.whiteTexture;
+                    Texture texture = source != null && source.HasProperty("_MainTex")
+                        ? source.GetTexture("_MainTex") : null;
+                    if (texture == null) texture = Texture2D.whiteTexture;
                     float opacity = source != null && source.HasProperty("_Opacity")
                         ? source.GetFloat("_Opacity") : 1f;
                     cmd.SetGlobalTexture("_MmdShadowMainTex", texture);
                     cmd.SetGlobalFloat("_MmdShadowOpacity", opacity);
-                    cmd.DrawRenderer(renderer, _depthMaterial, subMesh, 0);
+                    if (bakedMesh != null)
+                    {
+                        // DrawRenderer with an override material can use the bind-pose vertex
+                        // stream. Drawing the baked mesh guarantees VMD skinning is reflected
+                        // in the Gaussian shadow map.
+                        cmd.DrawMesh(bakedMesh, skinnedRenderer.localToWorldMatrix,
+                            _depthMaterial, subMesh, 0);
+                    }
+                    else
+                    {
+                        cmd.DrawRenderer(renderer, _depthMaterial, subMesh, 0);
+                    }
                 }
             }
             Graphics.ExecuteCommandBuffer(cmd);
@@ -92,6 +109,21 @@ namespace GaussianSplatting
             material.SetVector("_MmdMeshShadowTexelSize", new Vector4(1f / _map.width, 1f / _map.height, 0f, 0f));
             material.SetFloat("_MmdMeshShadowBias", depthBias);
             material.SetFloat("_MmdMeshShadowEnabled", 1f);
+        }
+
+        private Mesh GetBakedMesh(SkinnedMeshRenderer renderer)
+        {
+            if (!_bakedMeshes.TryGetValue(renderer, out var mesh) || mesh == null)
+            {
+                mesh = new Mesh
+                {
+                    name = renderer.name + " Gaussian Shadow",
+                    hideFlags = HideFlags.HideAndDontSave,
+                };
+                _bakedMeshes[renderer] = mesh;
+            }
+            renderer.BakeMesh(mesh);
+            return mesh;
         }
 
         private bool EnsureResources()
@@ -172,6 +204,9 @@ namespace GaussianSplatting
         {
             ReleaseMap();
             if (_depthMaterial != null) Destroy(_depthMaterial);
+            foreach (var mesh in _bakedMeshes.Values)
+                if (mesh != null) Destroy(mesh);
+            _bakedMeshes.Clear();
         }
     }
 }

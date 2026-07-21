@@ -56,9 +56,6 @@ namespace GaussianSplatting
 
         public string LastLoadError { get; private set; }
 
-        // HDRP は OnRenderObject を呼ばないため、SRP のコールバックで代替する
-        private bool _isHDRP;
-
         // 顔追跡の微小ノイズでは前回結果を再利用し、カリングとソートを別々の頻度で更新する。
         private bool    _hasSorted;
         private Vector3 _lastSortEyeWorld;
@@ -93,14 +90,6 @@ namespace GaussianSplatting
         {
             if (GetComponent<GaussianMeshShadowRenderer>() == null)
                 gameObject.AddComponent<GaussianMeshShadowRenderer>();
-            _isHDRP = DetectHDRP();
-            if (_isHDRP)
-                RenderPipelineManager.beginCameraRendering += OnBeginCameraRenderingHDRP;
-        }
-
-        private void OnDisable()
-        {
-            RenderPipelineManager.beginCameraRendering -= OnBeginCameraRenderingHDRP;
         }
 
         // ------------------------------------------------------------------ //
@@ -345,30 +334,33 @@ namespace GaussianSplatting
 
         private int EffectiveSplatCount => _activeSortSlot >= 0 ? _activeDrawCount : 0;
 
-        // Built-in RP および URP: 両パイプラインとも OnRenderObject を呼ぶ
-        private void OnRenderObject()
+        // Queue a normal procedural renderer before cameras are rendered. Unity then inserts
+        // it into the active Built-in/URP/HDRP pipeline at the material's transparent queue.
+        // This avoids SRP event timing issues (draws before clear or after target release).
+        private void Update()
         {
-            if (_isHDRP || !IsLoaded || material == null) return;
-
-            var cam = Camera.current;
-            if (cam == null || cam != Camera.main) return;
+            if (!IsLoaded || material == null || EffectiveSplatCount <= 0) return;
+            var cam = Camera.main;
+            if (cam == null) return;
 
             SetMaterialProperties();
-            material.SetPass(0);
-            Graphics.DrawProceduralNow(MeshTopology.Triangles, EffectiveSplatCount * 6);
+            Graphics.DrawProcedural(material, TransformBounds(LocalBounds, transform.localToWorldMatrix),
+                MeshTopology.Triangles, EffectiveSplatCount * 6, 1, cam, null,
+                ShadowCastingMode.Off, false, gameObject.layer);
         }
 
-        // HDRP: OnRenderObject が呼ばれないため SRP コールバックで描画する
-        private void OnBeginCameraRenderingHDRP(ScriptableRenderContext ctx, Camera cam)
+        private static Bounds TransformBounds(Bounds local, Matrix4x4 matrix)
         {
-            if (!IsLoaded || material == null || cam != Camera.main) return;
-
-            SetMaterialProperties();
-
-            var cmd = new CommandBuffer { name = "GaussianSplat" };
-            cmd.DrawProcedural(Matrix4x4.identity, material, 0, MeshTopology.Triangles, EffectiveSplatCount * 6);
-            ctx.ExecuteCommandBuffer(cmd);
-            cmd.Release();
+            var center = matrix.MultiplyPoint3x4(local.center);
+            var extents = local.extents;
+            var axisX = matrix.MultiplyVector(new Vector3(extents.x, 0f, 0f));
+            var axisY = matrix.MultiplyVector(new Vector3(0f, extents.y, 0f));
+            var axisZ = matrix.MultiplyVector(new Vector3(0f, 0f, extents.z));
+            extents = new Vector3(
+                Mathf.Abs(axisX.x) + Mathf.Abs(axisY.x) + Mathf.Abs(axisZ.x),
+                Mathf.Abs(axisX.y) + Mathf.Abs(axisY.y) + Mathf.Abs(axisZ.y),
+                Mathf.Abs(axisX.z) + Mathf.Abs(axisY.z) + Mathf.Abs(axisZ.z));
+            return new Bounds(center, extents * 2f);
         }
 
         private void SetMaterialProperties()
@@ -487,12 +479,6 @@ namespace GaussianSplatting
             _buildingSort = false;
             _hasSorted = false;
             _hasCullAnchor = false;
-        }
-
-        private static bool DetectHDRP()
-        {
-            var pipeline = GraphicsSettings.currentRenderPipeline;
-            return pipeline != null && pipeline.GetType().FullName.Contains("HDRenderPipeline");
         }
 
         private static Bounds ComputeLocalBounds(GaussianSplatGPU[] splats)

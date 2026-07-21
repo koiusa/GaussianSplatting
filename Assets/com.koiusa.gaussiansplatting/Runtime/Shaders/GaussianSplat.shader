@@ -14,7 +14,9 @@ Shader "GaussianSplatting/GaussianSplat"
             "IgnoreProjector"= "True"
         }
         Blend SrcAlpha OneMinusSrcAlpha
-        ZWrite Off
+        // Share surviving Gaussian fragments with the camera depth buffer. The
+        // fragment shader clips negligible alpha before a depth value is written.
+        ZWrite On
         ZTest LEqual
         Cull Off
 
@@ -45,7 +47,8 @@ Shader "GaussianSplatting/GaussianSplat"
             "IgnoreProjector"= "True"
         }
         Blend SrcAlpha OneMinusSrcAlpha
-        ZWrite Off
+        // Share depth with URP opaque and transparent geometry.
+        ZWrite On
         ZTest LEqual
         Cull Off
 
@@ -74,7 +77,7 @@ Shader "GaussianSplatting/GaussianSplat"
             "IgnoreProjector"= "True"
         }
         Blend SrcAlpha OneMinusSrcAlpha
-        ZWrite Off
+        ZWrite On
         ZTest LEqual
         Cull Off
 
