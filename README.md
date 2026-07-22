@@ -22,18 +22,28 @@ Install the package from npm by adding the npm registry to your project's
     }
   ],
   "dependencies": {
-    "com.koiusa.gaussiansplatting": "0.1.3"
+    "com.koiusa.gaussiansplatting": "0.2.2"
   }
 }
 ```
 
-Alternatively, use Unity's Package Manager to install the Git URL:
+The npm package automatically installs its `com.koiusa.placement` dependency.
 
-```text
-https://github.com/koiusa/GaussianSplatting.git?path=/Assets/com.koiusa.gaussiansplatting
+Alternatively, install both packages from Git by adding the following entries to
+your project's `Packages/manifest.json`:
+
+```json
+{
+  "dependencies": {
+    "com.koiusa.placement": "https://github.com/koiusa/GaussianSplatting.git?path=/Assets/com.koiusa.placement",
+    "com.koiusa.gaussiansplatting": "https://github.com/koiusa/GaussianSplatting.git?path=/Assets/com.koiusa.gaussiansplatting"
+  }
+}
 ```
 
 ## Contents
 
-The package contains the renderer, PLY parser, GPU/CPU sorting, GPU frustum culling,
-transform manipulator, shaders, and the default material.
+The Gaussian Splatting package contains the renderer, PLY parser, GPU/CPU sorting,
+GPU frustum culling, shaders, and the default material. Reusable transform placement
+and manipulation components are provided by the separate `com.koiusa.placement`
+package.
