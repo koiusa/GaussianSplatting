@@ -1,0 +1,14 @@
+{
+  "name": "com.koiusa.placement",
+  "version": "1.0.0",
+  "displayName": "Koiusa Placement",
+  "description": "Reusable transform placement and manipulation components for Unity.",
+  "unity": "6000.3",
+  "dependencies": {
+    "com.unity.inputsystem": "1.11.2"
+  },
+  "author": {
+    "name": "koiusa"
+  },
+  "license": "MIT"
+}
