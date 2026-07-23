@@ -47,3 +47,12 @@ The Gaussian Splatting package contains the renderer, PLY parser, GPU/CPU sortin
 GPU frustum culling, shaders, and the default material. Reusable transform placement
 and manipulation components are provided by the separate `com.koiusa.placement`
 package.
+
+## Optional integrations
+
+- Add `GaussianSplatOffAxisController` beside `GaussianSplatRenderer` when an
+  Off-Axis system overrides the camera view/projection matrices. Without it, the
+  renderer uses the normal camera transform and has no Off-Axis-specific behavior.
+- Add `GaussianMeshShadowRenderer` only when MMD or another animated mesh should
+  cast a shadow onto the splats. Assign its `ShadowSource` from the project-specific
+  model adapter; the base renderer does not depend on LibMMD.

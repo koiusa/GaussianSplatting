@@ -18,25 +18,6 @@ namespace GaussianSplatting
         [SerializeField] public ComputeShader sortShader;
         [SerializeField] public ComputeShader cullShader; // GaussianSplatCull.compute（null なら視錐台カリングなし）
         [SerializeField, Min(4096)] private int asyncUploadChunkSize = 65536;
-        [SerializeField, Min(0f), Tooltip("Off-Axis の眼位置移動に備えて視錐台を広げる追加マージン（ワールド単位）")]
-        private float offAxisCullSafetyMargin = 0.1f;
-        [Header("Off-Axis Update Throttling")]
-        [SerializeField, Min(0.1f)] private float maxCullUpdatesPerSecond = 5f;
-        [SerializeField, Min(0f)] private float cullPositionThreshold = 0.1f;
-        [SerializeField, Range(0f, 30f)] private float cullAngleThreshold = 2f;
-        [SerializeField, Min(0.1f)] private float maxSortUpdatesPerSecond = 12f;
-        [SerializeField, Min(0f)] private float sortPositionThreshold = 0.03f;
-        [SerializeField, Range(0f, 30f)] private float sortAngleThreshold = 0.75f;
-        [Header("MMD Drop Shadow")]
-        [SerializeField] private bool receiveMmdDropShadow = true;
-        [SerializeField, Range(0f, 1f)] private float dropShadowOpacity = 0.9f;
-        [SerializeField, Range(0f, 0.95f), Tooltip("影の中心からこの比率までは濃さを維持する")]
-        private float dropShadowHardness = 0.6f;
-        [SerializeField, Min(0.05f)] private float dropShadowRadiusScale = 0.85f;
-        [SerializeField, Min(0.01f), Tooltip("足元より上にあるSplatへ影を許容する、モデル高に対する比率")]
-        private float dropShadowAboveTolerance = 0.04f;
-        [SerializeField, Min(0.01f), Tooltip("足元より下にある地面へ影を届かせる、モデル高に対する比率")]
-        private float dropShadowBelowTolerance = 0.2f;
 
         private ComputeBuffer _splatBuffer;
         private GaussianSplatGPU[] _splats;
@@ -71,13 +52,8 @@ namespace GaussianSplatting
         private float _lastSortTime;
         private float _lastCullTime;
         private bool _hasCullAnchor;
-        private Light _shadowLight;
-
-        /// <summary>
-        /// Optional project-specific source for the drop-shadow receiver data.
-        /// The package deliberately does not depend on LibMMD or another model system.
-        /// </summary>
-        public IGaussianSplatShadowSource ShadowSource { get; set; }
+        private GaussianSplatOffAxisController _offAxisController;
+        private GaussianMeshShadowRenderer _meshShadowRenderer;
 
         public bool   IsLoaded       => _splats != null && _splatBuffer != null;
         public int    SplatCount     => _splats?.Length ?? 0;
@@ -86,10 +62,12 @@ namespace GaussianSplatting
 
         // ------------------------------------------------------------------ //
 
-        private void OnEnable()
+        private void OnEnable() => CacheOptionalComponents();
+
+        private void CacheOptionalComponents()
         {
-            if (GetComponent<GaussianMeshShadowRenderer>() == null)
-                gameObject.AddComponent<GaussianMeshShadowRenderer>();
+            TryGetComponent(out _offAxisController);
+            TryGetComponent(out _meshShadowRenderer);
         }
 
         // ------------------------------------------------------------------ //
@@ -203,12 +181,26 @@ namespace GaussianSplatting
             var cam = Camera.main;
             if (cam == null) return;
 
-            // Off-Axis ProjectionではCamera.transformと実際のView Matrixの眼位置・向きが異なる。
-            // 描画シェーダーと同じworldToCameraMatrixからソート基準を復元する。
-            Matrix4x4 cameraToWorld = cam.worldToCameraMatrix.inverse;
-            Vector3 eyeWorld = cameraToWorld.MultiplyPoint3x4(Vector3.zero);
-            Vector3 viewForwardWorld = -(Vector3)cameraToWorld.GetColumn(2);
-            viewForwardWorld.Normalize();
+            if (_offAxisController == null)
+                TryGetComponent(out _offAxisController);
+
+            bool useOffAxis = _offAxisController != null && _offAxisController.isActiveAndEnabled;
+            Vector3 eyeWorld;
+            Vector3 viewForwardWorld;
+            if (useOffAxis)
+                _offAxisController.GetView(cam, out eyeWorld, out viewForwardWorld);
+            else
+            {
+                eyeWorld = cam.transform.position;
+                viewForwardWorld = cam.transform.forward;
+            }
+
+            float maxCullUpdatesPerSecond = useOffAxis ? _offAxisController.MaxCullUpdatesPerSecond : 30f;
+            float cullPositionThreshold = useOffAxis ? _offAxisController.CullPositionThreshold : 0.01f;
+            float cullAngleThreshold = useOffAxis ? _offAxisController.CullAngleThreshold : 0.1f;
+            float maxSortUpdatesPerSecond = useOffAxis ? _offAxisController.MaxSortUpdatesPerSecond : 30f;
+            float sortPositionThreshold = useOffAxis ? _offAxisController.SortPositionThreshold : 0.01f;
+            float sortAngleThreshold = useOffAxis ? _offAxisController.SortAngleThreshold : 0.1f;
 
             var camLocalPos = transform.InverseTransformPoint(eyeWorld);
             var camLocalForward = transform.InverseTransformDirection(viewForwardWorld);
@@ -273,7 +265,7 @@ namespace GaussianSplatting
                 // 非同期カリング～Radix Sort 完了までの間に欠けにくい保守的な範囲にする。
                 Matrix4x4 viewProjection = cam.projectionMatrix * cam.worldToCameraMatrix;
                 var planes = GeometryUtility.CalculateFrustumPlanes(viewProjection);
-                float eyeOffset = Vector3.Distance(eyeWorld, cam.transform.position);
+                float eyeOffset = useOffAxis ? Vector3.Distance(eyeWorld, cam.transform.position) : 0f;
                 var lossyScale = transform.lossyScale;
                 float worldScale = Mathf.Max(Mathf.Abs(lossyScale.x),
                     Mathf.Max(Mathf.Abs(lossyScale.y), Mathf.Abs(lossyScale.z)));
@@ -282,7 +274,8 @@ namespace GaussianSplatting
                 float angularMargin = (Vector3.Distance(eyeWorld, boundsCenterWorld)
                     + boundsRadiusWorld) * Mathf.Tan(cullAngleThreshold * Mathf.Deg2Rad);
                 float cullMargin = eyeOffset
-                    + Mathf.Max(offAxisCullSafetyMargin, cullPositionThreshold)
+                    + Mathf.Max(useOffAxis ? _offAxisController.CullSafetyMargin : 0f,
+                                cullPositionThreshold)
                     + angularMargin;
                 _culler.Dispatch(_splatBuffer, _splats.Length, transform.localToWorldMatrix,
                     planes, worldScale, cullMargin);
@@ -369,62 +362,15 @@ namespace GaussianSplatting
             material.SetBuffer("_SplatBuffer",   _splatBuffer);
             if (_activeSortSlot >= 0)
                 material.SetBuffer("_SortedIndices", _sorters[_activeSortSlot].SortedIndexBuffer);
-            SetDropShadowProperties();
-        }
-
-        private void SetDropShadowProperties()
-        {
-            if (!receiveMmdDropShadow || ShadowSource == null
-                || !ShadowSource.TryGetShadowCasters(out _, out var bounds))
+            if (_meshShadowRenderer == null)
+                TryGetComponent(out _meshShadowRenderer);
+            if (_meshShadowRenderer != null && _meshShadowRenderer.isActiveAndEnabled)
+                _meshShadowRenderer.ApplyMaterialProperties(material);
+            else
             {
                 material.SetFloat("_MmdDropShadowOpacity", 0f);
-                return;
+                material.SetFloat("_MmdMeshShadowEnabled", 0f);
             }
-
-            float footprint = Mathf.Max(bounds.extents.x, bounds.extents.z);
-            float radius = Mathf.Max(0.05f, footprint * dropShadowRadiusScale);
-            float modelHeight = Mathf.Max(bounds.size.y, 0.1f);
-            Vector2 projectedAxis = GetProjectedShadowAxis(modelHeight);
-            material.SetVector("_MmdDropShadowCenterRadius",
-                new Vector4(bounds.center.x, bounds.min.y, bounds.center.z, radius));
-            material.SetVector("_MmdDropShadowAxis",
-                new Vector4(projectedAxis.x, projectedAxis.y, 0f, 0f));
-            material.SetVector("_MmdDropShadowParams",
-                new Vector4(
-                    Mathf.Max(0.01f, modelHeight * dropShadowAboveTolerance),
-                    Mathf.Max(0.01f, modelHeight * dropShadowBelowTolerance),
-                    dropShadowHardness, 0f));
-            material.SetFloat("_MmdDropShadowOpacity", dropShadowOpacity);
-        }
-
-        private Vector2 GetProjectedShadowAxis(float modelHeight)
-        {
-            if (_shadowLight == null || !_shadowLight.isActiveAndEnabled
-                || _shadowLight.type != LightType.Directional)
-            {
-                _shadowLight = RenderSettings.sun;
-                if (_shadowLight == null || _shadowLight.type != LightType.Directional)
-                {
-                    foreach (var light in FindObjectsByType<Light>(FindObjectsSortMode.None))
-                    {
-                        if (light.isActiveAndEnabled && light.type == LightType.Directional)
-                        {
-                            _shadowLight = light;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (_shadowLight == null) return Vector2.zero;
-
-            // A directional light's forward vector is the direction travelled by its rays.
-            // Project a ray from the top of the model down to the feet plane.  Clamp grazing
-            // angles so an almost-horizontal light cannot create an unbounded shadow.
-            Vector3 ray = _shadowLight.transform.forward.normalized;
-            float downward = Mathf.Max(0.15f, -ray.y);
-            var axis = new Vector2(ray.x, ray.z) * (modelHeight / downward);
-            return Vector2.ClampMagnitude(axis, modelHeight * 3f);
         }
 
         // ------------------------------------------------------------------ //

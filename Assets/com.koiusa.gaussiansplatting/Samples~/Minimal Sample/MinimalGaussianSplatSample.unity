@@ -49,14 +49,6 @@ MonoBehaviour:
   sortShader: {fileID: 7200000, guid: 47711330668ff1648933cd65a7cd3226, type: 3}
   cullShader: {fileID: 7200000, guid: 0bd119aa2f760474c8c8808b057766e1, type: 3}
   asyncUploadChunkSize: 65536
-  offAxisCullSafetyMargin: 0.1
-  maxCullUpdatesPerSecond: 5
-  cullPositionThreshold: 0.1
-  cullAngleThreshold: 2
-  maxSortUpdatesPerSecond: 12
-  sortPositionThreshold: 0.03
-  sortAngleThreshold: 0.75
-  receiveMmdDropShadow: 0
 --- !u!114 &1003
 MonoBehaviour:
   m_ObjectHideFlags: 0

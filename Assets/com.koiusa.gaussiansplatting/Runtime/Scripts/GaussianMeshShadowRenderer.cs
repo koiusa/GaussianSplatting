@@ -9,6 +9,17 @@ namespace GaussianSplatting
     [RequireComponent(typeof(GaussianSplatRenderer))]
     public sealed class GaussianMeshShadowRenderer : MonoBehaviour
     {
+        [Header("MMD Drop Shadow")]
+        [SerializeField] private bool receiveDropShadow = true;
+        [SerializeField, Range(0f, 1f)] private float dropShadowOpacity = 0.9f;
+        [SerializeField, Range(0f, 0.95f), Tooltip("影の中心からこの比率までは濃さを維持する")]
+        private float dropShadowHardness = 0.6f;
+        [SerializeField, Min(0.05f)] private float dropShadowRadiusScale = 0.85f;
+        [SerializeField, Min(0.01f), Tooltip("足元より上にあるSplatへ影を許容する、モデル高に対する比率")]
+        private float dropShadowAboveTolerance = 0.04f;
+        [SerializeField, Min(0.01f), Tooltip("足元より下にある地面へ影を届かせる、モデル高に対する比率")]
+        private float dropShadowBelowTolerance = 0.2f;
+        [Header("MMD Mesh Shadow Map")]
         [SerializeField, Range(256, 2048)] private int resolution = 1024;
         [SerializeField, Range(0f, 0.005f), Tooltip("Light空間の正規化深度Bias。MMDとGaussianは別ジオメトリなので通常は0でよい")]
         private float depthBias = 0f;
@@ -16,16 +27,22 @@ namespace GaussianSplatting
         private GaussianSplatRenderer _splat;
         private RenderTexture _map;
         private Material _depthMaterial;
+        private Light _shadowLight;
         private readonly Dictionary<SkinnedMeshRenderer, Mesh> _bakedMeshes =
             new Dictionary<SkinnedMeshRenderer, Mesh>();
+
+        /// <summary>
+        /// Project-specific MMD/model adapter. The Gaussian package has no LibMMD dependency.
+        /// </summary>
+        public IGaussianSplatShadowSource ShadowSource { get; set; }
 
         private void Awake() => _splat = GetComponent<GaussianSplatRenderer>();
 
         private void LateUpdate()
         {
             if (_splat == null || !_splat.IsLoaded || _splat.material == null
-                || _splat.ShadowSource == null
-                || !_splat.ShadowSource.TryGetShadowCasters(out var renderers, out var bounds)
+                || ShadowSource == null
+                || !ShadowSource.TryGetShadowCasters(out var renderers, out var bounds)
                 || renderers == null || renderers.Length == 0)
             {
                 if (_splat != null && _splat.material != null)
@@ -109,6 +126,48 @@ namespace GaussianSplatting
             material.SetVector("_MmdMeshShadowTexelSize", new Vector4(1f / _map.width, 1f / _map.height, 0f, 0f));
             material.SetFloat("_MmdMeshShadowBias", depthBias);
             material.SetFloat("_MmdMeshShadowEnabled", 1f);
+        }
+
+        /// <summary>Applies the optional analytic MMD shadow receiver parameters.</summary>
+        public void ApplyMaterialProperties(Material material)
+        {
+            if (material == null) return;
+            if (!receiveDropShadow || ShadowSource == null
+                || !ShadowSource.TryGetShadowCasters(out _, out var bounds))
+            {
+                material.SetFloat("_MmdDropShadowOpacity", 0f);
+                material.SetFloat("_MmdMeshShadowEnabled", 0f);
+                return;
+            }
+
+            float footprint = Mathf.Max(bounds.extents.x, bounds.extents.z);
+            float radius = Mathf.Max(0.05f, footprint * dropShadowRadiusScale);
+            float modelHeight = Mathf.Max(bounds.size.y, 0.1f);
+            Vector2 projectedAxis = GetProjectedShadowAxis(modelHeight);
+            material.SetVector("_MmdDropShadowCenterRadius",
+                new Vector4(bounds.center.x, bounds.min.y, bounds.center.z, radius));
+            material.SetVector("_MmdDropShadowAxis",
+                new Vector4(projectedAxis.x, projectedAxis.y, 0f, 0f));
+            material.SetVector("_MmdDropShadowParams",
+                new Vector4(
+                    Mathf.Max(0.01f, modelHeight * dropShadowAboveTolerance),
+                    Mathf.Max(0.01f, modelHeight * dropShadowBelowTolerance),
+                    dropShadowHardness, 0f));
+            material.SetFloat("_MmdDropShadowOpacity", dropShadowOpacity);
+        }
+
+        private Vector2 GetProjectedShadowAxis(float modelHeight)
+        {
+            if (_shadowLight == null || !_shadowLight.isActiveAndEnabled
+                || _shadowLight.type != LightType.Directional)
+                _shadowLight = FindDirectionalLight();
+
+            if (_shadowLight == null) return Vector2.zero;
+
+            Vector3 ray = _shadowLight.transform.forward.normalized;
+            float downward = Mathf.Max(0.15f, -ray.y);
+            var axis = new Vector2(ray.x, ray.z) * (modelHeight / downward);
+            return Vector2.ClampMagnitude(axis, modelHeight * 3f);
         }
 
         private Mesh GetBakedMesh(SkinnedMeshRenderer renderer)
