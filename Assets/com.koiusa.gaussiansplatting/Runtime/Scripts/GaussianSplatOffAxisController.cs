@@ -19,6 +19,9 @@ namespace GaussianSplatting
         [SerializeField, Min(0.1f)] private float maxSortUpdatesPerSecond = 12f;
         [SerializeField, Min(0f)] private float sortPositionThreshold = 0.03f;
         [SerializeField, Range(0f, 30f)] private float sortAngleThreshold = 0.75f;
+        [Header("Diagnostics")]
+        [SerializeField, Tooltip("カリング結果とソート結果の交換をConsoleへ記録する")]
+        private bool logDiagnostics;
 
         public float CullSafetyMargin => cullSafetyMargin;
         public float MaxCullUpdatesPerSecond => maxCullUpdatesPerSecond;
@@ -27,6 +30,7 @@ namespace GaussianSplatting
         public float MaxSortUpdatesPerSecond => maxSortUpdatesPerSecond;
         public float SortPositionThreshold => sortPositionThreshold;
         public float SortAngleThreshold => sortAngleThreshold;
+        public bool LogDiagnostics => logDiagnostics;
 
         public void GetView(Camera camera, out Vector3 eyeWorld, out Vector3 forwardWorld)
         {

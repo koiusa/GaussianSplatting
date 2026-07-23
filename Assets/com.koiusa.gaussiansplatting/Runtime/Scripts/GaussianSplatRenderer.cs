@@ -54,6 +54,26 @@ namespace GaussianSplatting
         private bool _hasCullAnchor;
         private GaussianSplatOffAxisController _offAxisController;
         private GaussianMeshShadowRenderer _meshShadowRenderer;
+        private IGaussianSplatShadowSource _shadowSource;
+
+        /// <summary>
+        /// Compatibility entry point for model integrations. A source is forwarded only when
+        /// an optional <see cref="GaussianMeshShadowRenderer"/> is explicitly attached.
+        /// </summary>
+        public IGaussianSplatShadowSource ShadowSource
+        {
+            get => _meshShadowRenderer != null
+                ? _meshShadowRenderer.ShadowSource
+                : _shadowSource;
+            set
+            {
+                _shadowSource = value;
+                if (_meshShadowRenderer == null)
+                    TryGetComponent(out _meshShadowRenderer);
+                if (_meshShadowRenderer != null)
+                    _meshShadowRenderer.ShadowSource = value;
+            }
+        }
 
         public bool   IsLoaded       => _splats != null && _splatBuffer != null;
         public int    SplatCount     => _splats?.Length ?? 0;
@@ -68,6 +88,8 @@ namespace GaussianSplatting
         {
             TryGetComponent(out _offAxisController);
             TryGetComponent(out _meshShadowRenderer);
+            if (_meshShadowRenderer != null && _shadowSource != null)
+                _meshShadowRenderer.ShadowSource = _shadowSource;
         }
 
         // ------------------------------------------------------------------ //
@@ -214,9 +236,9 @@ namespace GaussianSplatting
                     bool transformMovedDuringSort = HasTransformChanged(
                         _buildingSplatPosition, _buildingSplatRotation, _buildingSplatScale);
 
-                    // Publish each completed result even if the root moved meanwhile. Dropping
-                    // it froze the visible ordering until manipulation stopped. A slightly
-                    // delayed result is preferable and lets rotation update every eight frames.
+                    // The sort payload is already independent from the culling source buffer,
+                    // so publish it progressively even if the tracked eye moved meanwhile.
+                    // Holding the previous payload made the display remain visibly coarse.
                     _activeSortSlot = _buildingSortSlot;
                     _activeDrawCount = _buildingDrawCount;
                     _lastSortEyeWorld = _buildingEyeWorld;
@@ -227,10 +249,15 @@ namespace GaussianSplatting
                     _hasSorted = true;
                     _buildingSort = false;
 
-                    // Keep one radix pass per frame, but immediately start the next eight-pass
-                    // cycle from the current transform. Reuse the conservative visible set
-                    // while manipulation continues; culling catches up when rotation settles.
-                    if (transformMovedDuringSort && _culler.Ready)
+                    if (useOffAxis && _offAxisController.LogDiagnostics)
+                        Debug.Log($"[GaussianSplat OffAxis] sort publish frame={Time.frameCount} "
+                            + $"visible={_activeDrawCount} eye={_lastSortEyeWorld:F4}", this);
+
+                    // Do not let transform-following sorts starve a required recull.
+                    bool cullAnchorInvalid = HasLeftCullEnvelope(
+                        eyeWorld, viewForwardWorld,
+                        cullPositionThreshold, cullAngleThreshold);
+                    if (transformMovedDuringSort && _culler.Ready && !cullAnchorInvalid)
                     {
                         BeginSort(camLocalPos, camLocalForward, eyeWorld, viewForwardWorld);
                         return;
@@ -241,7 +268,17 @@ namespace GaussianSplatting
             bool cullResultChanged = !_buildingSort && _culler.ConsumeResultChanged();
             if (cullResultChanged && _culler.Ready)
             {
-                BeginSort(camLocalPos, camLocalForward, eyeWorld, viewForwardWorld);
+                bool staleCullResult = useOffAxis
+                    && ((eyeWorld - _lastCullEyeWorld).sqrMagnitude
+                            >= cullPositionThreshold * cullPositionThreshold
+                        || Vector3.Angle(viewForwardWorld, _lastCullForwardWorld)
+                            >= cullAngleThreshold);
+                if (useOffAxis && _offAxisController.LogDiagnostics)
+                    Debug.Log($"[GaussianSplat OffAxis] cull ready frame={Time.frameCount} "
+                        + $"visible={_culler.VisibleCount}/{_splats.Length} eye={eyeWorld:F4} "
+                        + $"stale={staleCullResult}", this);
+                if (!staleCullResult)
+                    BeginSort(camLocalPos, camLocalForward, eyeWorld, viewForwardWorld);
             }
 
             if (_buildingSort || cullResultChanged) return;
@@ -249,13 +286,9 @@ namespace GaussianSplatting
             float now = Time.unscaledTime;
             bool cullIntervalElapsed = !_hasCullAnchor
                 || now - _lastCullTime >= 1f / Mathf.Max(0.1f, maxCullUpdatesPerSecond);
-            bool leftCullEnvelope = !_hasCullAnchor
-                || (eyeWorld - _lastCullEyeWorld).sqrMagnitude
-                    >= cullPositionThreshold * cullPositionThreshold
-                || Vector3.Angle(viewForwardWorld, _lastCullForwardWorld) >= cullAngleThreshold
-                || HasTransformChanged(_lastCullSplatPosition,
-                                       _lastCullSplatRotation,
-                                       _lastCullSplatScale);
+            bool leftCullEnvelope = HasLeftCullEnvelope(
+                eyeWorld, viewForwardWorld,
+                cullPositionThreshold, cullAngleThreshold);
 
             // 視点が前回の保守的なカリング範囲を出たときだけ、最大指定Hzで再カリングする。
             if (cullIntervalElapsed && leftCullEnvelope && _culler.CanDispatch)
@@ -286,6 +319,9 @@ namespace GaussianSplatting
                 _lastCullSplatScale = transform.lossyScale;
                 _lastCullTime = now;
                 _hasCullAnchor = true;
+                if (useOffAxis && _offAxisController.LogDiagnostics)
+                    Debug.Log($"[GaussianSplat OffAxis] cull dispatch frame={Time.frameCount} "
+                        + $"margin={cullMargin:F4} eye={eyeWorld:F4}", this);
                 return;
             }
 
@@ -323,6 +359,18 @@ namespace GaussianSplatting
             return (transform.position - position).sqrMagnitude > 1e-10f
                 || Quaternion.Angle(transform.rotation, rotation) > 0.001f
                 || (transform.lossyScale - scale).sqrMagnitude > 1e-10f;
+        }
+
+        private bool HasLeftCullEnvelope(Vector3 eyeWorld, Vector3 forwardWorld,
+                                         float positionThreshold, float angleThreshold)
+        {
+            return !_hasCullAnchor
+                || (eyeWorld - _lastCullEyeWorld).sqrMagnitude
+                    >= positionThreshold * positionThreshold
+                || Vector3.Angle(forwardWorld, _lastCullForwardWorld) >= angleThreshold
+                || HasTransformChanged(_lastCullSplatPosition,
+                                       _lastCullSplatRotation,
+                                       _lastCullSplatScale);
         }
 
         private int EffectiveSplatCount => _activeSortSlot >= 0 ? _activeDrawCount : 0;
@@ -364,6 +412,9 @@ namespace GaussianSplatting
                 material.SetBuffer("_SortedIndices", _sorters[_activeSortSlot].SortedIndexBuffer);
             if (_meshShadowRenderer == null)
                 TryGetComponent(out _meshShadowRenderer);
+            if (_meshShadowRenderer != null && _shadowSource != null
+                && !ReferenceEquals(_meshShadowRenderer.ShadowSource, _shadowSource))
+                _meshShadowRenderer.ShadowSource = _shadowSource;
             if (_meshShadowRenderer != null && _meshShadowRenderer.isActiveAndEnabled)
                 _meshShadowRenderer.ApplyMaterialProperties(material);
             else
