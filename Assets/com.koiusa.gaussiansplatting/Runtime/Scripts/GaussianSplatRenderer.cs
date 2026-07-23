@@ -52,6 +52,7 @@ namespace GaussianSplatting
         private float _lastSortTime;
         private float _lastCullTime;
         private bool _hasCullAnchor;
+        private bool _hasUsableCullResult;
         private GaussianSplatOffAxisController _offAxisController;
         private GaussianMeshShadowRenderer _meshShadowRenderer;
         private IGaussianSplatShadowSource _shadowSource;
@@ -257,7 +258,8 @@ namespace GaussianSplatting
                     bool cullAnchorInvalid = HasLeftCullEnvelope(
                         eyeWorld, viewForwardWorld,
                         cullPositionThreshold, cullAngleThreshold);
-                    if (transformMovedDuringSort && _culler.Ready && !cullAnchorInvalid)
+                    if (transformMovedDuringSort && _culler.Ready
+                        && _hasUsableCullResult && !cullAnchorInvalid)
                     {
                         BeginSort(camLocalPos, camLocalForward, eyeWorld, viewForwardWorld);
                         return;
@@ -277,7 +279,8 @@ namespace GaussianSplatting
                     Debug.Log($"[GaussianSplat OffAxis] cull ready frame={Time.frameCount} "
                         + $"visible={_culler.VisibleCount}/{_splats.Length} eye={eyeWorld:F4} "
                         + $"stale={staleCullResult}", this);
-                if (!staleCullResult)
+                _hasUsableCullResult = !staleCullResult;
+                if (_hasUsableCullResult)
                     BeginSort(camLocalPos, camLocalForward, eyeWorld, viewForwardWorld);
             }
 
@@ -334,7 +337,8 @@ namespace GaussianSplatting
                     || Vector3.Angle(viewForwardWorld, _lastSortForwardWorld) >= sortAngleThreshold);
             needsResort = needsResort || (_hasSorted && HasTransformChanged(
                 _lastSortSplatPosition, _lastSortSplatRotation, _lastSortSplatScale));
-            if (sortIntervalElapsed && needsResort && _culler.Ready)
+            if (sortIntervalElapsed && needsResort && _culler.Ready
+                && _hasUsableCullResult)
                 BeginSort(camLocalPos, camLocalForward, eyeWorld, viewForwardWorld);
         }
 
@@ -443,6 +447,7 @@ namespace GaussianSplatting
             _buildingSort = false;
             _hasSorted = false;
             _hasCullAnchor = false;
+            _hasUsableCullResult = false;
             _lastSortTime = 0f;
             _lastCullTime = 0f;
         }
@@ -476,6 +481,7 @@ namespace GaussianSplatting
             _buildingSort = false;
             _hasSorted = false;
             _hasCullAnchor = false;
+            _hasUsableCullResult = false;
         }
 
         private static Bounds ComputeLocalBounds(GaussianSplatGPU[] splats)
