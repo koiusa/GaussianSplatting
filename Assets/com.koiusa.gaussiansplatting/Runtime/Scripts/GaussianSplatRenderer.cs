@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -127,8 +128,11 @@ namespace GaussianSplatting
             int generation = _loadGeneration;
             const int stride = 64;
             int chunkSize = Mathf.Max(4096, asyncUploadChunkSize);
-            var boundsMin = new Vector3(float.MaxValue,  float.MaxValue,  float.MaxValue);
-            var boundsMax = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+
+            // Bounds does not use Unity objects, so calculate it away from the main thread.
+            // It overlaps the mandatory main-thread ComputeBuffer upload and removes a full
+            // per-splat loop from each upload frame.
+            Task<Bounds> boundsTask = Task.Run(() => ComputeLocalBounds(splats));
 
             bool allocationFailed = false;
             try
@@ -154,12 +158,6 @@ namespace GaussianSplatting
                 try
                 {
                     _splatBuffer.SetData(splats, offset, offset, count);
-                    int end = offset + count;
-                    for (int i = offset; i < end; i++)
-                    {
-                        boundsMin = Vector3.Min(boundsMin, splats[i].position);
-                        boundsMax = Vector3.Max(boundsMax, splats[i].position);
-                    }
                 }
                 catch (Exception ex)
                 {
@@ -176,12 +174,31 @@ namespace GaussianSplatting
                 yield return null;
             }
 
+            while (!boundsTask.IsCompleted)
+            {
+                if (generation != _loadGeneration) yield break;
+                yield return null;
+            }
+
+            if (boundsTask.IsFaulted)
+            {
+                LastLoadError = boundsTask.Exception?.GetBaseException().Message
+                    ?? "Failed to calculate PLY bounds.";
+                Release();
+                yield break;
+            }
+
+            if (boundsTask.IsCanceled)
+            {
+                LastLoadError = "PLY bounds calculation was canceled.";
+                Release();
+                yield break;
+            }
+
             if (generation != _loadGeneration) yield break;
             _splats        = splats;
             LoadedFilePath = filePath;
-            var bounds = new Bounds();
-            bounds.SetMinMax(boundsMin, boundsMax);
-            LocalBounds = bounds;
+            LocalBounds    = boundsTask.Result;
 
             InitializeGpuPipeline(splats.Length);
 
